@@ -1,0 +1,82 @@
+name: Repository Dispatch Parent
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.cache-info.outputs.cache-key }}
+      dist-available: ${{ steps.check-dist.outputs.dist-available }}
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Generate cache key
+      id: cache-info
+      run: |
+        CACHE_KEY="dist-${{ github.repository_owner }}-${{ github.sha }}"
+        echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+        echo "🔑 New cache key: $CACHE_KEY"
+    
+    - name: Build and Test (Always)
+      run: |
+        echo "🚀 Building parent repository and dispatching to child repositories..."
+        echo "⚡ Always executing make all (no cache reuse in parent)"
+        make all
+        echo "✅ Build completed successfully"
+    
+    - name: Save fresh dist cache
+      uses: actions/cache/save@v4
+      with:
+        path: dist/
+        key: ${{ steps.cache-info.outputs.cache-key }}
+    
+    - name: Check dist directory
+      id: check-dist
+      run: |
+        if [ -d "dist" ] && [ "$(ls -A dist)" ]; then
+          echo "dist-available=true" >> $GITHUB_OUTPUT
+          echo "📁 dist/ directory contents:"
+          ls -la dist/
+        else
+          echo "dist-available=false" >> $GITHUB_OUTPUT
+          echo "⚠️ dist/ directory is empty or doesn't exist"
+        fi
+
+  dispatch-multiple:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: CI
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      matrix:
+        repo: 
+          - 'endika/demo-repo-dispatch-child'
+          # - 'endika/demo-repo-dispatch-child-bis'
+    
+    steps:
+    - name: Repository Dispatch to Multiple Repos
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.PAT }}
+        repository: ${{ matrix.repo }}
+        event-type: 'trigger-build'
+        client-payload: |
+          {
+            "parent_repository": "${{ github.repository }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}",
+            "actor": "${{ github.actor }}",
+            "message": "Parent repository updated on main branch",
+            "timestamp": "${{ github.event.head_commit.timestamp }}",
+            "cache": {
+              "key": "${{ needs.build.outputs.cache-key }}",
+              "dist_available": "${{ needs.build.outputs.dist-available }}",
+              "path": "dist/",
+              "restore_keys": "dist-${{ github.repository_owner }}-"
+            },
+            "build_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } 

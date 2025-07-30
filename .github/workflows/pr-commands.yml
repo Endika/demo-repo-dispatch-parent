@@ -1,0 +1,194 @@
+name: PR Commands Handler
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  check-command:
+    if: github.event.issue.pull_request && startsWith(github.event.comment.body, '/')
+    runs-on: ubuntu-latest
+    outputs:
+      command: ${{ steps.parse.outputs.command }}
+      should_dispatch: ${{ steps.parse.outputs.should_dispatch }}
+      pr_number: ${{ steps.parse.outputs.pr_number }}
+      
+    steps:
+    - name: Check permissions
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: pullRequest } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+          
+          // Check if user has write permissions
+          const { data: permissions } = await github.rest.repos.getCollaboratorPermissionLevel({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            username: context.actor
+          });
+          
+          if (!['write', 'admin'].includes(permissions.permission)) {
+            throw new Error('User does not have permission to execute commands');
+          }
+          
+          console.log(`User ${context.actor} has ${permissions.permission} permission`);
+    
+    - name: Parse command
+      id: parse
+      run: |
+        COMMENT_BODY="${{ github.event.comment.body }}"
+        echo "comment_body=$COMMENT_BODY" >> $GITHUB_OUTPUT
+        echo "pr_number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+        
+        # Extract command (first line, remove leading slash)
+        COMMAND=$(echo "$COMMENT_BODY" | head -n1 | sed 's|^/||')
+        echo "command=$COMMAND" >> $GITHUB_OUTPUT
+        
+        # Check if it's the supported command
+        if [ "$COMMAND" = "demo-build" ]; then
+          echo "should_dispatch=true" >> $GITHUB_OUTPUT
+          echo "✅ Command 'demo-build' recognized"
+        else
+          echo "should_dispatch=false" >> $GITHUB_OUTPUT
+          echo "❌ Only '/demo-build' command is supported"
+        fi
+
+  react-to-command:
+    needs: check-command
+    if: needs.check-command.outputs.should_dispatch == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Add reaction to comment
+      uses: actions/github-script@v7
+      with:
+        script: |
+          await github.rest.reactions.createForIssueComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            comment_id: ${{ github.event.comment.id }},
+            content: 'rocket'
+          });
+
+    - name: Post processing message
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const command = '${{ needs.check-command.outputs.command }}';
+          const message = `🚀 Processing command \`/${command}\`...\n\n` +
+                         `⏰ Started at: ${new Date().toISOString()}`;
+          
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: ${{ needs.check-command.outputs.pr_number }},
+            body: message
+          });
+
+  dispatch-from-pr:
+    needs: [check-command, react-to-command]
+    if: needs.check-command.outputs.should_dispatch == 'true'
+    runs-on: ubuntu-latest
+    environment: CI
+    strategy:
+      matrix:
+        repo: 
+          - 'endika/demo-repo-dispatch-child'
+          # - 'endika/demo-repo-dispatch-child-bis'
+    outputs:
+      cache-key: ${{ steps.cache-info.outputs.cache-key }}
+      dist-available: ${{ steps.check-dist.outputs.dist-available }}
+    
+    steps:
+    - name: Checkout PR
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.pull_request.head.sha || github.sha }}
+        
+    - name: Get PR details
+      id: pr-details
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: pullRequest } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: ${{ needs.check-command.outputs.pr_number }}
+          });
+          
+          core.setOutput('pr_title', pullRequest.title);
+          core.setOutput('pr_branch', pullRequest.head.ref);
+          core.setOutput('pr_sha', pullRequest.head.sha);
+          
+    - name: Generate cache key for PR
+      id: cache-info
+      run: |
+        CACHE_KEY="dist-pr-${{ github.repository_owner }}-${{ steps.pr-details.outputs.pr_sha }}"
+        echo "cache-key=$CACHE_KEY" >> $GITHUB_OUTPUT
+        echo "🔑 PR cache key: $CACHE_KEY"
+    
+    - name: Build PR with make all
+      run: |
+        echo "🚀 Building PR with /demo-build command..."
+        echo "⚡ Executing make all for PR #${{ needs.check-command.outputs.pr_number }}"
+        make all
+        echo "✅ PR build completed successfully"
+    
+    - name: Save PR dist cache
+      uses: actions/cache/save@v4
+      with:
+        path: dist/
+        key: ${{ steps.cache-info.outputs.cache-key }}
+    
+    - name: Check dist directory
+      id: check-dist
+      run: |
+        if [ -d "dist" ] && [ "$(ls -A dist)" ]; then
+          echo "dist-available=true" >> $GITHUB_OUTPUT
+          echo "📁 PR dist/ directory contents:"
+          ls -la dist/
+        else
+          echo "dist-available=false" >> $GITHUB_OUTPUT
+          echo "⚠️ PR dist/ directory is empty or doesn't exist"
+        fi
+          
+    - name: Set event details
+      id: event-mapping
+      run: |
+        echo "event_type=trigger-build" >> $GITHUB_OUTPUT
+        echo "message=Build requested from PR #${{ needs.check-command.outputs.pr_number }}" >> $GITHUB_OUTPUT
+        
+    - name: Dispatch to child repositories
+      uses: peter-evans/repository-dispatch@v3
+      with:
+        token: ${{ secrets.PAT }}
+        repository: ${{ matrix.repo }}
+        event-type: ${{ steps.event-mapping.outputs.event_type }}
+        client-payload: |
+          {
+            "ref": "${{ steps.pr-details.outputs.pr_branch }}",
+            "sha": "${{ steps.pr-details.outputs.pr_sha }}",
+            "actor": "${{ github.event.comment.user.login }}",
+            "workflow": "${{ github.workflow }}",
+            "repository": "${{ github.repository }}",
+            "message": "${{ steps.event-mapping.outputs.message }}",
+            "timestamp": "${{ github.event.comment.created_at }}",
+            "pr_number": "${{ needs.check-command.outputs.pr_number }}",
+            "pr_title": "${{ steps.pr-details.outputs.pr_title }}",
+            "command": "${{ needs.check-command.outputs.command }}",
+            "is_pr_command": true,
+            "target_repo": "${{ matrix.repo }}",
+            "cache": {
+              "key": "${{ steps.cache-info.outputs.cache-key }}",
+              "dist_available": "${{ steps.check-dist.outputs.dist-available }}",
+              "path": "dist/",
+              "restore_keys": "dist-pr-${{ github.repository_owner }}-"
+            },
+            "build_url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+
+ 

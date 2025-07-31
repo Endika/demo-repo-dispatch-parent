@@ -11,6 +11,23 @@ jobs:
     if: github.event.client_payload.is_pr_command == 'true' && github.event.client_payload.pr_number != ''
     
     steps:
+    - name: Debug - Workflow Version and Payload
+      run: |
+        echo "🔍 DEBUG: receive-child-response.yml (updated version)"
+        echo "📅 Version: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "📦 Full payload received:"
+        echo '${{ toJson(github.event.client_payload) }}'
+        echo ""
+        
+    - name: Test Token Permissions
+      run: |
+        echo "🔐 Testing token permissions..."
+        # Test basic repo access (this should work)
+        curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+             -H "Accept: application/vnd.github.v3+json" \
+             "https://api.github.com/repos/${{ github.repository }}" | jq -r '.name // "ERROR"'
+        echo "✅ Token can access repository"
+        
     - name: Display Child Response Info
       run: |
         echo "📨 Child Repository Response for PR Command!"
@@ -18,22 +35,20 @@ jobs:
         echo "📋 PR Number: ${{ github.event.client_payload.pr_number }}"
         echo "📊 Response Status: ${{ github.event.client_payload.response_status }}"
         echo "💬 Response Message: ${{ github.event.client_payload.response_message }}"
-        echo "🎯 Target Repo: ${{ github.event.client_payload.target_repo }}"
+        echo "⏰ Processed at: ${{ github.event.client_payload.processed_at }}"
         
     - name: Comment Child Response on PR
       uses: actions/github-script@v7
       with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
           const prNumber = '${{ github.event.client_payload.pr_number }}';
           const childRepo = '${{ github.event.client_payload.child_repository }}';
-          const targetRepo = '${{ github.event.client_payload.target_repo }}';
           const command = '${{ github.event.client_payload.command }}' || 'demo-build';
           const responseStatus = '${{ github.event.client_payload.response_status }}';
           const responseMessage = '${{ github.event.client_payload.response_message }}';
           const childWorkflowUrl = '${{ github.event.client_payload.child_workflow_url }}';
-          const commitSha = '${{ github.event.client_payload.commit_sha }}' || '';
-          const commitUrl = '${{ github.event.client_payload.commit_url }}' || '';
-          const artifactsUpdated = '${{ github.event.client_payload.artifacts_updated }}' === 'true';
+          const confirmationOnly = '${{ github.event.client_payload.confirmation_only }}' === 'true';
           
           const statusEmoji = {
             'success': '✅',
@@ -43,17 +58,14 @@ jobs:
             'processed': '⚙️'
           }[responseStatus] || '📊';
           
-          let message = `## ${statusEmoji} Child Build Result: \`${targetRepo}\`\n\n`;
+          let message = `## ${statusEmoji} Child Repository Response\n\n`;
+          message += `**Repository:** \`${childRepo}\`\n`;
           message += `**Command:** \`/${command}\`\n`;
           message += `**Status:** ${responseStatus}\n`;
-          message += `**Message:** ${responseMessage}\n\n`;
+          message += `**Response:** ${responseMessage}\n\n`;
           
-          // Agregar información de artifacts y commits
-          if (artifactsUpdated && commitSha) {
-            message += `**📝 New Commit:** [\`${commitSha.substring(0, 8)}\`](${commitUrl})\n`;
-            message += `**🤖 Auto-Update:** Child repository updated with parent artifacts\n`;
-          } else {
-            message += `**📦 Artifacts:** No changes detected in child repository\n`;
+          if (confirmationOnly) {
+            message += `**📦 Action:** Confirmation received (no artifacts processed)\n`;
           }
           
           message += `\n🔗 [View child workflow run](${childWorkflowUrl})\n`;

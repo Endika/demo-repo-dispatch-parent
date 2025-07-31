@@ -40,15 +40,7 @@ jobs:
     - name: Comment Child Response on PR
       uses: actions/github-script@v7
       with:
-<<<<<<< HEAD
-        github-token: ${{ secrets.PAT }}
-=======
-<<<<<<< HEAD
-        github-token: ${{ secrets.PAT }}
-=======
         github-token: ${{ secrets.GITHUB_TOKEN }}
->>>>>>> 7c4157f (chore: demo commit)
->>>>>>> 4ca16a9 (fix: permision error)
         script: |
           const prNumber = '${{ github.event.client_payload.pr_number }}';
           const childRepo = '${{ github.event.client_payload.child_repository }}';

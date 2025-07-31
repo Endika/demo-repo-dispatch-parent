@@ -30,7 +30,7 @@ from dataclasses import dataclass
 class ChildServiceV1:
     service_name: str
     is_active: bool = True
-    env: str = "dev"
+    env: str = "dev1"
 """)
 
 def generate_child_bis_service_file():
